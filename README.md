@@ -48,7 +48,9 @@ input on top · right: a portrait, 360×360 → 1440×1440, input on the left ·
 
 ## Quick start
 
-1. **Install the nodes** and restart ComfyUI. Clone this repository into `custom_nodes` and install its two packages
+1. **Install the nodes** and restart ComfyUI. Search for **ReCaVSR video super-resolution** in ComfyUI-Manager, or
+   install it from the [Comfy Registry](https://registry.comfy.org/nodes/comfyui-recavsr) with
+   `comfy node install comfyui-recavsr`. Or clone this repository into `custom_nodes` and install its two packages
    (Triton for the attention kernels, OpenCV for the reference's frame resize; both have fallbacks, see
    [Requirements](#requirements)).
 
