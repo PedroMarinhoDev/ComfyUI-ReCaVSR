@@ -1,7 +1,7 @@
 [project]
 name = "comfyui-recavsr"
 description = "ReCaVSR one-step streaming video super-resolution natively in ComfyUI: 4x on Wan2.2, block by block with its FlashDecoder. bf16 and int8 ConvRot, measured on an RTX 3090 and 4090, runs from 8 GB."
-version = "1.0.0"
+version = "2.0.0"
 license = { file = "LICENSE" }
 requires-python = ">=3.10"
 classifiers = ["Operating System :: OS Independent", "Environment :: GPU :: NVIDIA CUDA"]

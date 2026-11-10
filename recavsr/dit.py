@@ -183,7 +183,7 @@ def causal_conv(conv, x, state):
         inp = torch.cat((combined[:, :, :1].expand(-1, -1, -needed, -1, -1), inp), 2)
     state.history = combined[:, :, -(kernel - 1):].clone()
     state.seen += x.shape[2]
-    return conv(inp)
+    return conv(inp) if last_end >= next_end else None  # a short chunk may complete no output yet
 
 
 class ChannelRMSNorm(nn.Module):
@@ -217,12 +217,24 @@ class LQProj(nn.Module):
         self.norm2 = ChannelRMSNorm(hidden2, 1e-6, device, dtype)
         self.out_proj = ops.Linear(hidden2, dim, device=device, dtype=dtype)
 
+    chunk = 0  # input frames per pass, 0 for the whole block; the node sets it when the full-size maps don't fit
+
     def forward(self, video, state):
+        # causal along time, so a few frames at a time give the same tokens with a fraction of the full-size maps
+        step = self.chunk or video.shape[2]
+        out = [y for i in range(0, video.shape[2], step) if (y := self._forward(video[:, :, i:i + step], state)) is not None]
+        return out[0] if len(out) == 1 else torch.cat(out, 1)
+
+    def _forward(self, video, state):
         b, c, t, h, w = video.shape
         x = video.view(b, c, t, h // 16, 16, w // 16, 16).permute(0, 1, 4, 6, 2, 3, 5).reshape(b, c * 256, t, h // 16, w // 16)
-        x = F.silu(self.norm1(causal_conv(self.conv1, x, state.conv1)))
-        x = F.silu(self.norm2(causal_conv(self.conv2, x, state.conv2)))
-        return self.out_proj(x.flatten(2).transpose(1, 2))
+        x = causal_conv(self.conv1, x, state.conv1)
+        if x is None:
+            return None
+        x = causal_conv(self.conv2, F.silu(self.norm1(x)), state.conv2)
+        if x is None:
+            return None
+        return self.out_proj(F.silu(self.norm2(x)).flatten(2).transpose(1, 2))
 
 
 class BlockConditioning:

@@ -35,14 +35,14 @@ input on top · right: a portrait, 360×360 → 1440×1440, input on the left ·
 
 <table>
   <tr>
-    <td width="33%" valign="top"><img src="assets/icons/stream.svg" width="24" alt=""><br><b>Streaming, one step per block</b><br>21 frames, then 8 at a time, each decoded as soon as it is generated. A longer clip costs time, not memory.</td>
+    <td width="33%" valign="top"><img src="assets/icons/stream.svg" width="24" alt=""><br><b>Streaming, one step per block</b><br>21 frames, then 8 at a time, each decoded and encoded into the output as soon as it is generated. A longer clip costs time and disk, not memory.</td>
     <td width="33%" valign="top"><img src="assets/icons/scale.svg" width="24" alt=""><br><b>4x to 3840×1920 on 24 GB</b><br>149 frames of 960×480 in 36 s on an RTX 4090 and 67 s on an RTX 3090, with the int8 file.</td>
     <td width="33%" valign="top"><img src="assets/icons/speed.svg" width="24" alt=""><br><b>int8 ConvRot</b><br>6.3 GB instead of 10.6, and the transformer 1.8× faster, on both cards and both sizes.</td>
   </tr>
   <tr>
     <td valign="top"><img src="assets/icons/decoder.svg" width="24" alt=""><br><b>FlashDecoder</b><br>The model's own, streaming decoder: 25 to 40× faster than the Wan 2.2 VAE and it fits at 4K. The VAE option draws finer texture when time allows.</td>
     <td valign="top"><img src="assets/icons/check.svg" width="24" alt=""><br><b>The reference, bit for bit</b><br><code>exact</code> kernels reproduce ReCaVSR's own runtime on the same GPU; the faster default sits about 49 dB from it.</td>
-    <td valign="top"><img src="assets/icons/native.svg" width="24" alt=""><br><b>ComfyUI's memory management</b><br>Model patchers and dynamic VRAM: the weights stream when they don't fit, so 1440×1440 runs on an 8 GB card.</td>
+    <td valign="top"><img src="assets/icons/native.svg" width="24" alt=""><br><b>ComfyUI's memory management</b><br>Weights stream when they don't fit, and outputs too big for the card are fitted automatically: 5376×3072 runs on a 24 GB card.</td>
   </tr>
 </table>
 
@@ -84,7 +84,8 @@ input on top · right: a portrait, 360×360 → 1440×1440, input on the left ·
 
 3. **Open the workflow and run.** In ComfyUI, **Templates → ComfyUI-ReCaVSR → recavsr_video_4x** (or drag
    [`example_workflows/recavsr_video_4x.json`](example_workflows/recavsr_video_4x.json) in), load your clip in **Load
-   Video** and queue. The audio and frame rate pass through to **Save Video**.
+   Video** and queue. **Load Video → ReCaVSR Upscale Video → Save Video**: the node reads the clip a block at a time and
+   encodes the upscaled video as it goes, with the input's audio and frame rate, so Save Video only stores it.
 
 **Scale 4 is what the model was trained for**; the reference also documents 2 and 1.5. Any size runs: sizes that are
 not a multiple of 32 are padded for the model and cropped back.
@@ -95,7 +96,8 @@ Two clips from ReCaVSR's real-world demo set at 4x, through a ComfyUI server per
 dynamic VRAM, Linux. The time is the **ReCaVSR Upscale Video** node's: moving the models onto the GPU, every block, and
 decoding and copying the frames out. Each setting ran after a 29-frame warm-up at the same size, so Triton's kernel
 builds and reading the file from disk are not in it; writing the mp4 adds 5 to 15 s. PSNR is against bf16 + exact +
-FlashDecoder on the same card, over every frame of the node's uint8 output.
+FlashDecoder on the same card, over every frame of the node's uint8 output. These runs used the node's earlier
+image output; the streaming VIDEO output is faster still (see [Long and large videos](#long-and-large-videos)).
 
 **Rainy street**, 149 frames, 960×480 → 3840×1920
 
@@ -184,6 +186,34 @@ below anything visible, and takes 7 to 24% off the node's time. The exception is
   </tr>
 </table>
 
+## Long and large videos
+
+**Length costs disk, not memory.** With a VIDEO connected, the node reads the clip a block at a time and writes the
+upscaled video as it goes: each decoded block becomes 8-bit on the GPU, is copied to pinned memory on a side stream and
+encoded on a thread while the next block computes, then **Save Video** stores the file without re-encoding. Nothing
+grows with the clip's length. (Connected as images, the frames still sit in memory as ComfyUI images, float32: 88 MB
+per 3840×1920 frame.) On the RTX 4090 the portrait at 4x, 180 frames, now runs as one 17.8 s prompt including saving;
+decoding and copying took 2.2 s of it instead of 4.2 s.
+
+**Size is fitted to the card.** At large outputs the first block's input projection, which turns 21 frames at the full
+output size into tokens, is the peak: 16.5 GiB at 5376×3072. Its convolutions are causal in time, so the node can feed
+it 4 frames at a time instead (6.2 GiB, the same tokens up to one bf16 rounding step). The node picks the cheapest
+setting that fits and logs it:
+
+1. whole blocks, as measured above (bit for bit the reference with `exact` kernels);
+2. the input projection 4 frames at a time;
+3. also the attention history in RAM (`kv_offload`);
+4. otherwise a clear error naming the largest `scale` that fits.
+
+A 73-frame 1344×768 clip at 4x, 5376×3072, ran this way on the RTX 4090 in 80 s.
+
+**Encoding** defaults to `auto`: HEVC on NVENC, then H.264 on NVENC (up to 4096 pixels a side), then x264, the first
+that opens at the output size. NVENC is a separate unit on NVIDIA GPUs, so it costs neither CUDA cores nor CPU.
+
+**Scene cuts.** ReCaVSR treats a clip as one shot: after a cut, the first blocks still draw on the previous shot through
+the recycled latents and the attention history, which shows as shimmer for a moment. Until the node resets at cuts,
+upscale each shot as its own clip when that matters.
+
 ## Smaller cards and other setups
 
 **Smaller cards.** The node tells ComfyUI how much room its activations need, about 2.6 MB per 32×32 tile of the output
@@ -219,7 +249,7 @@ code paths but is not a target.
 | Node | What it does |
 |---|---|
 | **ReCaVSR Model Loader** | `transformer` picks the DiT file in `models/recavsr`, bf16 or int8; `prompt.safetensors` and `flashdecoder.safetensors` are read from the same folder. The weights wait in RAM until a run. |
-| **ReCaVSR Upscale Video** | IMAGE frames in, IMAGE frames out. The terminal shows each stage, a progress bar with every block's transformer and decode time, and a summary with the frame rate. |
+| **ReCaVSR Upscale Video** | A VIDEO or IMAGE frames in, a VIDEO out, encoded to a file block by block as it is made: a clip's length costs disk, not memory. Save Video stores it without re-encoding; Get Video Components turns it into IMAGE frames when another node needs them. The terminal shows each stage, a progress bar with every block's transformer and decode time, and a summary with the frame rate. |
 
 **ReCaVSR Upscale Video**'s inputs:
 
@@ -230,7 +260,9 @@ code paths but is not a target.
 | `seed` | The one-step noise. |
 | `decoder` | `flashdecoder`, the model's own, streaming; or `vae`, the Wan 2.2 VAE connected to the optional `vae` input, decoded at the end. |
 | `kernels` | `fast` (default) or `exact`, above. |
-| `kv_offload` | Keeps the attention history in RAM between blocks instead of VRAM, for cards the output size doesn't fit. Off by default. |
+| `kv_offload` | Keeps the attention history in RAM between blocks instead of VRAM. The node turns it on by itself when the output wouldn't fit otherwise (see [Long and large videos](#long-and-large-videos)). |
+| `video` / `images` | The input: connect one. A video is read a block at a time and keeps its audio and frame rate; images are held in memory as ComfyUI images are (float32, 88 MB per 3840×1920 frame), and the output gets `fps` and no audio. |
+| `encoder` | `auto` (default) tries `hevc nvenc`, then `h264 nvenc`, then `h264`, and takes the first that runs at the output size. The NVENC ones use NVIDIA's video encoder, a separate unit beside the CUDA cores (constant quality 19 / 17; H.264 up to 4096 pixels a side, HEVC up to 8192); `h264` is x264 on the CPU (CRF 14) and plays everywhere. A specific choice falls back down the same order. Frames become 8-bit on the GPU and are copied and encoded while the next block computes. |
 
 ## Requirements
 
@@ -317,9 +349,9 @@ error 0.96%.
 <details>
 <summary><b>Out of memory at large output sizes</b></summary>
 
-The activations grow with the output size: about 2.6 MB per 32×32 output tile, 18 GB at 3840×1920. ComfyUI streams
-the weights by itself when they don't fit beside them; when the activations alone don't fit, turn on `kv_offload` or
-lower `scale`. See [Smaller cards](#smaller-cards-and-other-setups).
+The node fits the output to the card by itself (see [Long and large videos](#long-and-large-videos)); when even the
+fitted activations don't fit, it stops before loading anything and names the largest `scale` that would. Lower `scale`
+or upscale a smaller input. Through the `images` input, long clips also fill RAM; connect a VIDEO instead.
 </details>
 
 <details>
