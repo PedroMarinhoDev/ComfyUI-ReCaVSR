@@ -66,7 +66,7 @@ class FileFrames:
     def get(self, start, stop):
         while self.first + len(self.cache) < stop:
             frame = next(self.frames, None)
-            if frame is None or (self.end_pts is not None and frame.pts is not None and frame.pts >= self.end_pts):
+            if frame is None or (self.end_pts is not None and frame.pts is not None and frame.pts > self.end_pts):
                 break
             self.cache.append(frame.to_ndarray(format="rgb24"))
         if start > self.first:
