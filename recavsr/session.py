@@ -50,8 +50,10 @@ def upscale_frames(frames, size):
 def prepare_block(frames, start, valid, block, size, device):
     """The LQ input of one block, [1, 3, block, H, W] at the padded output size on the device."""
     x = upscale_frames(frames[start:start + valid], size).to(device).permute(1, 0, 2, 3).unsqueeze(0)
-    if valid < block:
-        x = torch.cat((x, x[:, :, -1:].expand(-1, -1, block - valid, -1, -1)), 2)
+    # Pad to the full block size based on the frames actually present, not on `valid`: a file-backed source can
+    # return fewer frames than requested, and the model and decoder both assume a full block.
+    if x.shape[2] < block:
+        x = torch.cat((x, x[:, :, -1:].expand(-1, -1, block - x.shape[2], -1, -1)), 2)
     ph, pw = (-size[0]) % STRIDE, (-size[1]) % STRIDE
     if pw:
         x = F.pad(x, (0, pw, 0, 0, 0, 0), mode="reflect" if pw < size[1] else "replicate")
